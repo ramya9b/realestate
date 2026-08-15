@@ -1,3 +1,9 @@
 node_modules/
 dist/
 .env.local
+.env
+
+# Client documents — commission rate, pricing and business model.
+# This repository is public; these must not be pushed.
+files/
+*.pdf
