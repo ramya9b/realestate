@@ -686,7 +686,10 @@ create policy listing_unlocks_staff_all on public.listing_unlocks
 create view public.listings_public as
   select
     l.id, l.category, l.status, l.title, l.survey_number,
-    l.state, d.name as district, t.name as taluk, l.village_city, l.pincode,
+    l.state,
+    l.district_id, d.name as district, d.name_kn as district_kn,
+    l.taluk_id,    t.name as taluk,    t.name_kn as taluk_kn,
+    l.village_city, l.pincode,
     l.approx_lat, l.approx_lng,
     l.nearest_landmark, l.distance_from_main_road_m, l.nearest_places,
     l.distance_bus_stand_km, l.distance_hospital_km, l.distance_market_km,

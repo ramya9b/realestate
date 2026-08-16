@@ -3,6 +3,7 @@ import Home from './pages/Home'
 import Properties from './pages/Properties'
 import PropertyDetail from './pages/PropertyDetail'
 import PostProperty from './pages/PostProperty'
+import PostListing from './pages/PostListing'
 
 export default function App() {
   return (
@@ -12,6 +13,7 @@ export default function App() {
         <Route path="/properties" element={<Properties />} />
         <Route path="/property/:id" element={<PropertyDetail />} />
         <Route path="/post-property" element={<PostProperty />} />
+        <Route path="/post" element={<PostListing />} />
       </Routes>
     </BrowserRouter>
   )
