@@ -1,19 +1,22 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import AreaInput from '../components/form/AreaInput'
+import DocumentUpload, { type PickedDocs } from '../components/form/DocumentUpload'
 import {
   ChoiceGroup, Field, MultiSelect, Select, Steps, TextArea, TextInput, Toggle,
   type Option,
 } from '../components/form/fields'
-import { getDistricts, getTaluks } from '../lib/listings'
+import { useAuth } from '../lib/auth'
+import { uploadDocument } from '../lib/documents'
+import { createListing, getDistricts, getTaluks, submitForVerification } from '../lib/listings'
 import {
-  APPROVING_AUTHORITIES, DOCUMENT_TYPES, LABELS, LAND_TYPES, LAYOUT_AMENITIES,
+  APPROVING_AUTHORITIES, LABELS, LAND_TYPES, LAYOUT_AMENITIES,
   LISTING_CATEGORIES, PRICE_BASES, SITE_ROAD_WIDTHS_FT, TRUCK_SIZES_FT,
   WATER_SOURCES, ZONE_TYPES,
-  type AreaUnit, type ApprovingAuthority, type District, type LandType,
-  type LayoutAmenity, type ListingCategory, type PriceBasis, type Taluk,
-  type WaterSource, type ZoneType,
+  type AreaUnit, type ApprovingAuthority, type District, type DocumentType,
+  type LandType, type LayoutAmenity, type ListingCategory, type PriceBasis,
+  type Taluk, type WaterSource, type ZoneType,
 } from '../lib/schema'
 
 // Build sheet P1-01 to P1-04. Sections referenced below are the field
@@ -46,11 +49,17 @@ const AMENITY_OPTIONS = opts(LAYOUT_AMENITIES)
 const SPECIFIED: ListingCategory[] = ['land', 'site', 'warehouse']
 
 export default function PostListing() {
+  const { user, loading: authLoading } = useAuth()
+  const navigate = useNavigate()
+
   const [step, setStep] = useState(0)
   const [districts, setDistricts] = useState<District[]>([])
   const [taluks, setTaluks] = useState<Taluk[]>([])
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState('')
+  const [docs, setDocs] = useState<PickedDocs>({})
 
   // Section A — shared across every category
   const [category, setCategory] = useState<ListingCategory | ''>('')
@@ -145,16 +154,124 @@ export default function PostListing() {
     }
   }
 
-  const submit = async () => {
-    setError(null)
-    // Inserting requires an authenticated seller — listings.seller_id references
-    // auth.users and the RLS insert policy checks seller_id = auth.uid().
-    // Sign-in is build sheet P1-25 and is not built yet.
-    setError(
-      'Sign-in is not built yet (build sheet P1-25), so this listing cannot be saved. ' +
-      'Every field you entered is valid and the form is complete — only the seller account is missing.'
-    )
+  const num = (s: string): number | null => {
+    const n = parseFloat(s)
+    return Number.isFinite(n) ? n : null
   }
+  const int = (s: string): number | null => {
+    const n = parseInt(s, 10)
+    return Number.isFinite(n) ? n : null
+  }
+
+  /** Detail row for the chosen category. Keys must match the detail table's columns. */
+  const buildDetail = (): Record<string, unknown> | null => {
+    switch (category) {
+      case 'land':
+        return {
+          land_type: landType,
+          converted_non_agricultural: converted,
+          conversion_order_number: converted ? conversionOrder || null : null,
+          road_width_ft: num(landRoadWidth),
+          borewells: int(borewells),
+          water_source: landWater || null,
+          electricity_connection: electricity,
+          fenced,
+          standing_crop_or_trees: standingCrop || null,
+        }
+      case 'site':
+        return {
+          project_name: projectName || null,
+          total_sites_available: int(totalSites),
+          site_number: siteNumber || null,
+          site_length_ft: num(siteLength),
+          site_width_ft: num(siteWidth),
+          sites_facing_east: int(facingE) ?? 0,
+          sites_facing_west: int(facingW) ?? 0,
+          sites_facing_north: int(facingN) ?? 0,
+          sites_facing_south: int(facingS) ?? 0,
+          corner_site: cornerSite,
+          road_width_ft: int(siteRoadWidth),
+          approved_by: approvedBy,
+          amenities,
+        }
+      case 'warehouse':
+        return {
+          converted: whConverted,
+          floor_area_sqft: num(floorArea),
+          number_of_entries: int(entries),
+          number_of_docks: int(docks),
+          dock_levellers: dockLevellers,
+          parking_available: parking,
+          parking_vehicle_count: parking ? int(parkingCount) : null,
+          truck_size_feasible_ft: int(truckSize),
+          water_source: whWater || null,
+          drainage_system: drainage,
+          road_approach_width_ft: num(roadApproach),
+          has_canteen: canteen,
+          has_conveyors: conveyors,
+          has_wash_rooms: washRooms,
+          has_fire_hydrant: fireHydrant,
+          clear_height_ft: num(clearHeight),
+          power_load_kva: num(powerLoad),
+        }
+      default:
+        return null
+    }
+  }
+
+  const submit = async () => {
+    if (!user) { navigate('/signin?next=/post'); return }
+    setError(null)
+    setBusy(true)
+    try {
+      setProgress('Saving listing…')
+      const listingId = await createListing({
+        category: category as ListingCategory,
+        survey_number: surveyNumber || null,
+        district_id: districtId,
+        taluk_id: talukId,
+        village_city: village,
+        pincode: pincode || null,
+        nearest_landmark: landmark || null,
+        distance_from_main_road_m: num(roadDistanceM),
+        nearest_places: nearestPlaces || null,
+        distance_bus_stand_km: num(busKm),
+        distance_hospital_km: num(hospitalKm),
+        distance_market_km: num(marketKm),
+        area_value: num(areaValue) as number,
+        area_unit: areaUnit as AreaUnit,
+        price_amount: num(price) as number,
+        price_basis: priceBasis as PriceBasis,
+        negotiable,
+        zones,
+        description: description || null,
+        owner_name: ownerName,
+        owner_phone: ownerPhone,
+        detail: buildDetail(),
+      })
+
+      // Documents can only be filed once the listing exists — the storage
+      // policy joins on the listing id to decide who may write.
+      const entriesToUpload = Object.entries(docs) as [DocumentType, File][]
+      for (let i = 0; i < entriesToUpload.length; i++) {
+        const [type, file] = entriesToUpload[i]
+        setProgress(`Uploading documents… ${i + 1} of ${entriesToUpload.length}`)
+        await uploadDocument(listingId, type, file)
+      }
+
+      setProgress('Submitting for verification…')
+      await submitForVerification(listingId)
+      setSubmitted(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the listing. Try again.')
+    } finally {
+      setBusy(false)
+      setProgress('')
+    }
+  }
+
+  const allDocsPicked = (['ec', 'rtc', 'khata', 'mutation'] as DocumentType[])
+    .every(t => Boolean(docs[t]))
 
   if (submitted) {
     return (
@@ -437,28 +554,7 @@ export default function PostListing() {
             {/* ---- 4 · Documents & contact ---- */}
             {step === 4 && (
               <>
-                <div>
-                  <p className="text-sm font-semibold mb-1" style={{ color: '#1A2B4A' }}>
-                    Ownership documents
-                  </p>
-                  <p className="text-xs text-gray-400 mb-4">
-                    Our team checks these before the listing goes live. A listing without approved
-                    documents is never published.
-                  </p>
-                  <div className="space-y-2">
-                    {DOCUMENT_TYPES.map(d => (
-                      <div key={d} className="flex items-center justify-between border-2 border-dashed border-gray-200 rounded-xl px-4 py-3">
-                        <span className="text-sm">
-                          <span className="font-semibold" style={{ color: '#1A2B4A' }}>
-                            {LABELS.documentType[d].en}
-                          </span>
-                          <span className="text-gray-400 ml-2 text-xs">{LABELS.documentType[d].kn}</span>
-                        </span>
-                        <span className="text-xs text-gray-400">Upload — P1-07</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <DocumentUpload picked={docs} onChange={setDocs} />
 
                 <div className="pt-2">
                   <p className="text-sm font-semibold mb-3" style={{ color: '#1A2B4A' }}>Your details</p>
@@ -477,6 +573,16 @@ export default function PostListing() {
                   approximate location — your number and the exact plot are released only to a buyer
                   who pays.
                 </div>
+
+                {!user && !authLoading && (
+                  <div className="rounded-xl p-4 text-sm" style={{ background: '#EFF6FF', border: '1.5px solid #93C5FD', color: '#1E3A8A' }}>
+                    You need an account before a listing can be saved.{' '}
+                    <Link to="/signin?mode=up&next=/post" className="font-semibold underline" style={{ color: '#1E3A8A' }}>
+                      Create one
+                    </Link>{' '}
+                    — it takes a minute, and posting stays free.
+                  </div>
+                )}
 
                 {error && (
                   <div className="rounded-xl p-4 text-sm" style={{ background: '#FEF2F2', border: '1.5px solid #FCA5A5', color: '#991B1B' }}>
@@ -509,12 +615,12 @@ export default function PostListing() {
               ) : (
                 <button
                   type="button"
-                  disabled={!ownerName || !ownerPhone}
+                  disabled={!ownerName || !ownerPhone || !allDocsPicked || busy}
                   onClick={submit}
                   className="flex-1 text-white font-display font-bold py-3 rounded-xl disabled:opacity-40"
                   style={{ background: '#1A2B4A', border: 'none', cursor: 'pointer' }}
                 >
-                  Submit for verification
+                  {busy ? progress || 'Working…' : user ? 'Submit for verification' : 'Sign in to submit'}
                 </button>
               )}
             </div>

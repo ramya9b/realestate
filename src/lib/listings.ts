@@ -164,6 +164,98 @@ export async function getWarehouseDetail(id: string): Promise<WarehouseDetail | 
 }
 
 // ---------------------------------------------------------------------------
+// Creating a listing  (P1-01 to P1-08)
+// ---------------------------------------------------------------------------
+
+export interface CreateListingInput {
+  category: ListingCategory
+  survey_number: string | null
+  district_id: string
+  taluk_id: string
+  village_city: string
+  pincode: string | null
+  nearest_landmark: string | null
+  distance_from_main_road_m: number | null
+  nearest_places: string | null
+  distance_bus_stand_km: number | null
+  distance_hospital_km: number | null
+  distance_market_km: number | null
+  area_value: number
+  area_unit: AreaUnit
+  price_amount: number
+  price_basis: string
+  negotiable: boolean
+  zones: ZoneType[]
+  description: string | null
+  /** Written to listing_contacts, never onto the listing row. */
+  owner_name: string
+  owner_phone: string
+  /** Shape depends on category; keys must match the detail table's columns. */
+  detail: Record<string, unknown> | null
+}
+
+const DETAIL_TABLE: Partial<Record<ListingCategory, string>> = {
+  land: 'listing_land',
+  site: 'listing_site',
+  warehouse: 'listing_warehouse',
+}
+
+/**
+ * Creates the listing as a draft, then its detail row and contact record.
+ *
+ * Not a transaction — PostgREST has no multi-statement call — so on a failure
+ * partway the draft is deleted rather than left orphaned. A draft is invisible
+ * to everyone but its seller, so a leaked one is harmless, but cleaning up
+ * keeps "my listings" honest.
+ */
+export async function createListing(input: CreateListingInput): Promise<string> {
+  const { data: auth } = await supabase.auth.getUser()
+  const sellerId = auth.user?.id
+  if (!sellerId) throw new Error('Sign in before posting a listing.')
+
+  const { detail, owner_name, owner_phone, ...listing } = input
+
+  const { data: created, error } = await supabase
+    .from('listings')
+    .insert({ ...listing, seller_id: sellerId, status: 'draft' })
+    .select('id')
+    .single()
+  if (error) throw error
+
+  const listingId = created.id as string
+
+  try {
+    const table = DETAIL_TABLE[input.category]
+    if (table && detail) {
+      const { error: detailError } = await supabase
+        .from(table)
+        .insert({ ...detail, listing_id: listingId })
+      if (detailError) throw detailError
+    }
+
+    const { error: contactError } = await supabase
+      .from('listing_contacts')
+      .insert({ listing_id: listingId, owner_name, owner_phone })
+    if (contactError) throw contactError
+  } catch (e) {
+    await supabase.from('listings').delete().eq('id', listingId)
+    throw e
+  }
+
+  return listingId
+}
+
+/**
+ * Moves a draft into the review queue. The database function checks ownership
+ * and refuses if fewer than four documents are present — a seller cannot set
+ * their own listing to verified, which is the point of change 3.
+ */
+export async function submitForVerification(listingId: string): Promise<void> {
+  const { error } = await supabase.rpc('submit_for_verification', { target_listing: listingId })
+  if (error) throw error
+}
+
+// ---------------------------------------------------------------------------
 // Gated reads
 // ---------------------------------------------------------------------------
 
